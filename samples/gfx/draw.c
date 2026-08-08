@@ -116,6 +116,28 @@ void DrawHull( b3WorldTransform transform, const b3HullData* hull, Vec4 color )
 	}
 }
 
+void DrawHullSkin( b3WorldTransform transform, const b3HullData* hull, Vec4 color )
+{
+	if ( hull->skinRadius <= 0.0f )
+	{
+		return;
+	}
+
+	const b3Vec3* points = b3GetHullPoints( hull );
+	b3Sphere sphere;
+	sphere.radius = hull->skinRadius;
+
+	// DrawWireSphere transforms sphere->center by its `transform` argument.
+	// We pass each vertex as the sphere center in the hull's local space,
+	// so DrawWireSphere will place it at the correct world position.
+	for ( int i = 0; i < hull->vertexCount; ++i )
+	{
+		sphere.center = points[i];
+		DrawWireSphere( transform, &sphere, 8, color );
+	}
+}
+
+
 void DrawPlane( b3Vec3 normal, b3Pos point, Vec4 color )
 {
 	b3Vec3 c = ToRelative( point );

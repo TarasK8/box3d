@@ -1056,7 +1056,7 @@ b3ShapeProxy b3MakeShapeProxy( const b3Shape* shape )
 		{
 			const b3HullData* hull = shape->hull;
 			const b3Vec3* points = b3GetHullPoints( hull );
-			return (b3ShapeProxy){ points, hull->vertexCount, 0.0f };
+			return (b3ShapeProxy){ points, hull->vertexCount, hull->skinRadius };
 		}
 
 		default:

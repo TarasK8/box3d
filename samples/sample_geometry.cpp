@@ -826,3 +826,152 @@ public:
 
 static int sampleWheelRolling = RegisterSample( "Geometry", "Wheels", WheelRolling::Create );
 
+// ─── Rounded Shapes demo ──────────────────────────────────────────────────────
+// Demonstrates hull->skinRadius (Minkowski sum Pure Expand) on boxes and
+// cylinders.  A slider lets you tune the radius in real time and see both the
+// wireframe "skin" via DrawHullSkin() and its effect on the physics simulation.
+// ─────────────────────────────────────────────────────────────────────────────
+class RoundedShapes : public Sample
+{
+public:
+	explicit RoundedShapes( SampleContext* context )
+		: Sample( context )
+	{
+		if ( m_context->restart == false )
+		{
+			m_camera->SetView( -30.0f, 20.0f, 25.0f, { 0.0f, 2.0f, 0.0f } );
+		}
+
+		m_skinRadius = 0.08f;
+		m_bodyId = b3_nullBodyId;
+		m_cylinder = nullptr;
+
+		AddGroundBox( 40.0f );
+		Build();
+	}
+
+	~RoundedShapes() override
+	{
+		if ( m_cylinder != nullptr )
+		{
+			b3DestroyHull( m_cylinder );
+		}
+	}
+
+	void Build()
+	{
+		// Destroy previous body if it exists.
+		if ( B3_IS_NON_NULL( m_bodyId ) )
+		{
+			b3DestroyBody( m_bodyId );
+			m_bodyId = b3_nullBodyId;
+		}
+
+		if ( m_cylinder != nullptr )
+		{
+			b3DestroyHull( m_cylinder );
+			m_cylinder = nullptr;
+		}
+
+		// ── Rounded cylinder: 12 sides + skinRadius ──────────────────────────
+		// We use fewer sides than a standard cylinder because the skin radius
+		// smooths the faceted appearance naturally.
+		float cylHeight = 0.8f;
+		float cylRadius = 0.5f;
+		float skin = m_skinRadius;
+
+		m_cylinder = b3CreateCylinder( cylHeight, cylRadius, -0.5f * cylHeight, 12 );
+		if ( m_cylinder != nullptr )
+		{
+			m_cylinder->skinRadius = skin;
+		}
+
+		// ── Rounded box ──────────────────────────────────────────────────────
+		float hx = 0.5f, hy = 0.5f, hz = 0.5f;
+		m_box = b3MakeBoxHull( hx, hy, hz );
+		m_box.base.skinRadius = skin;
+
+		// ── Drop a dynamic rounded box into the scene ─────────────────────────
+		b3BodyDef bodyDef = b3DefaultBodyDef();
+		bodyDef.type = b3_dynamicBody;
+		bodyDef.position = { 0.0f, 3.0f, 0.0f };
+		bodyDef.name = "RoundedBox";
+		m_bodyId = b3CreateBody( m_worldId, &bodyDef );
+
+		b3ShapeDef shapeDef = b3DefaultShapeDef();
+		b3CreateHullShape( m_bodyId, &shapeDef, &m_box.base );
+	}
+
+	void Render() override
+	{
+		b3WorldTransform xfBox = b3WorldTransform_identity;
+		xfBox.p = { -2.0f, 0.5f, 0.0f };
+
+		b3WorldTransform xfCyl = b3WorldTransform_identity;
+		xfCyl.p = { 2.0f, 0.5f, 0.0f };
+
+		// Draw cores (wireframe edges)
+		DrawHull( xfBox, &m_box.base, MakeColor( b3_colorCyan ) );
+		if ( m_cylinder != nullptr )
+		{
+			DrawHull( xfCyl, m_cylinder, MakeColor( b3_colorYellow ) );
+		}
+
+		// Draw skin (wireframe spheres at each vertex)
+		Vec4 skinColor = MakeColorAlpha( b3_colorWhite, 0.4f );
+		DrawHullSkin( xfBox, &m_box.base, skinColor );
+		if ( m_cylinder != nullptr )
+		{
+			DrawHullSkin( xfCyl, m_cylinder, skinColor );
+		}
+
+		// Labels
+		DrawString3D( xfBox.p, MakeColor( b3_colorCyan ), "Rounded Box (r=%.3f)", m_box.base.skinRadius );
+		if ( m_cylinder != nullptr )
+		{
+			DrawString3D( xfCyl.p, MakeColor( b3_colorYellow ), "Rounded Cyl (r=%.3f)", m_cylinder->skinRadius );
+		}
+
+		// Show dynamic body info
+		if ( B3_IS_NON_NULL( m_bodyId ) )
+		{
+			b3Pos pos = b3Body_GetPosition( m_bodyId );
+			DrawString3D( pos, MakeColor( b3_colorGreen ), "Live body" );
+		}
+
+		DrawAxes( b3WorldTransform_identity, 1.0f );
+		DrawTextLine( "Minkowski sum skin radius = %.3f", m_skinRadius );
+		DrawTextLine( "Drag slider to change radius and rebuild" );
+
+		Sample::Render();
+	}
+
+	bool DrawControls() override
+	{
+		float fontSize = ImGui::GetFontSize();
+		ImGui::PushItemWidth( 12.0f * fontSize );
+
+		bool changed = ImGui::SliderFloat( "Skin Radius", &m_skinRadius, 0.0f, 0.25f, "%.4f" );
+
+		ImGui::PopItemWidth();
+
+		if ( changed )
+		{
+			Build();
+		}
+
+		return true;
+	}
+
+	static Sample* Create( SampleContext* sampleContext )
+	{
+		return new RoundedShapes( sampleContext );
+	}
+
+	b3BoxHull m_box;
+	b3HullData* m_cylinder;
+	b3BodyId m_bodyId;
+	float m_skinRadius;
+};
+
+static int sampleRoundedShapes = RegisterSample( "Geometry", "Rounded Shapes", RoundedShapes::Create );

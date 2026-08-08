@@ -1175,7 +1175,8 @@ bool b3ComputeMeshManifolds( b3World* world, int workerIndex, b3Contact* contact
 	}
 	else if ( shapeB->type == b3_hullShape )
 	{
-		radiusB = shapeB->hull->innerRadius;
+		// Rolling radius is the sum of the inner inscribed sphere and the Minkowski skin radius.
+		radiusB = shapeB->hull->innerRadius + shapeB->hull->skinRadius;
 	}
 
 	contact->rollingResistance = materialB->rollingResistance * radiusB;

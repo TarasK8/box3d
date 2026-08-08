@@ -479,12 +479,13 @@ void b3CollideHullAndSphere( b3LocalManifold* manifold, int capacity, const b3Hu
 	// Work in shapeA coordinates
 
 	b3DistanceInput distanceInput;
-	distanceInput.proxyA = (b3ShapeProxy){ b3GetHullPoints( hullA ), hullA->vertexCount, 0.0f };
+	// Include hull skin radius in the GJK proxy for Minkowski sum expansion.
+	distanceInput.proxyA = (b3ShapeProxy){ b3GetHullPoints( hullA ), hullA->vertexCount, hullA->skinRadius };
 	distanceInput.proxyB = (b3ShapeProxy){ &center, 1, 0.0f };
 	distanceInput.transform = b3Transform_identity;
 	distanceInput.useRadii = false;
 
-	float radiusA = 0.0f;
+	float radiusA = hullA->skinRadius;
 	float radiusB = sphereB->radius;
 	float radius = radiusA + radiusB;
 
@@ -818,7 +819,8 @@ void b3CollideHullAndCapsule( b3LocalManifold* manifold, int capacity, const b3H
 
 	// Work in shapeA coordinates
 	b3DistanceInput distanceInput;
-	distanceInput.proxyA = (b3ShapeProxy){ b3GetHullPoints( hullA ), hullA->vertexCount, 0.0f };
+	// Include hull skin radius in the GJK proxy so that the Minkowski sum expansion is automatic.
+	distanceInput.proxyA = (b3ShapeProxy){ b3GetHullPoints( hullA ), hullA->vertexCount, hullA->skinRadius };
 	distanceInput.proxyB = (b3ShapeProxy){ &capsuleB->center1, 2, 0.0f };
 	distanceInput.transform = transformBtoA;
 	distanceInput.useRadii = false;
@@ -826,7 +828,7 @@ void b3CollideHullAndCapsule( b3LocalManifold* manifold, int capacity, const b3H
 	b3DistanceOutput distanceOutput = b3ShapeDistance( &distanceInput, cache, NULL, 0 );
 	const float speculativeDistance = B3_SPECULATIVE_DISTANCE;
 
-	if ( distanceOutput.distance > capsuleB->radius + speculativeDistance )
+	if ( distanceOutput.distance > capsuleB->radius + hullA->skinRadius + speculativeDistance )
 	{
 		// We found a separating axis
 		*cache = (b3SimplexCache){ 0 };
@@ -984,7 +986,7 @@ static int b3BuildPolygon( b3ClipVertex* out, b3Transform transform, const b3Hul
 }
 
 static bool b3BuildFaceAContact( b3LocalManifold* manifold, int capacity, const b3HullData* hullA, const b3HullData* hullB,
-								 b3Transform transformBtoA, b3SeparatingAxis query, b3SATCache* cache )
+								 b3Transform transformBtoA, b3SeparatingAxis query, b3SATCache* cache, float totalRadius )
 {
 	B3_VALIDATE( query.type == b3_faceAxisA );
 	B3_VALIDATE( 0 <= query.indexA && query.indexA < hullA->faceCount );
@@ -1061,13 +1063,14 @@ static bool b3BuildFaceAContact( b3LocalManifold* manifold, int capacity, const 
 		// b3Vec3 point = clipPoint->position - clipPoint->separation * refPlane.normal;
 
 		pt->point = point;
-		pt->separation = clipPoint->separation;
+		// Adjust separation to account for the Minkowski skin radii of both hulls.
+		pt->separation = clipPoint->separation - totalRadius;
 		pt->pair = clipPoint->pair;
 
 		minSeparation = b3MinFloat( minSeparation, clipPoint->separation );
 	}
 
-	if ( minSeparation >= B3_SPECULATIVE_DISTANCE )
+	if ( minSeparation >= B3_SPECULATIVE_DISTANCE + totalRadius )
 	{
 		*cache = (b3SATCache){ 0 };
 		return false;
@@ -1085,7 +1088,7 @@ static bool b3BuildFaceAContact( b3LocalManifold* manifold, int capacity, const 
 }
 
 static bool b3BuildFaceBContact( b3LocalManifold* manifold, int capacity, const b3HullData* hullA, const b3HullData* hullB,
-								 b3Transform transformBtoA, b3SeparatingAxis query, b3SATCache* cache )
+								 b3Transform transformBtoA, b3SeparatingAxis query, b3SATCache* cache, float totalRadius )
 {
 	B3_VALIDATE( query.type == b3_faceAxisB );
 
@@ -1098,7 +1101,7 @@ static bool b3BuildFaceBContact( b3LocalManifold* manifold, int capacity, const 
 		.type = b3_faceAxisA,
 	};
 
-	bool touching = b3BuildFaceAContact( manifold, capacity, hullB, hullA, transformAtoB, flippedQuery, cache );
+	bool touching = b3BuildFaceAContact( manifold, capacity, hullB, hullA, transformAtoB, flippedQuery, cache, totalRadius );
 	if ( touching == false )
 	{
 		*cache = (b3SATCache){ 0 };
@@ -1128,7 +1131,7 @@ static bool b3BuildFaceBContact( b3LocalManifold* manifold, int capacity, const 
 }
 
 static bool b3BuildEdgeContact( b3LocalManifold* manifold, const b3HullData* hullA, const b3HullData* hullB,
-								b3Transform transformBtoA, b3SeparatingAxis query, b3SATCache* cache )
+								b3Transform transformBtoA, b3SeparatingAxis query, b3SATCache* cache, float totalRadius )
 {
 	B3_VALIDATE( query.type == b3_edgePairAxis );
 	B3_VALIDATE( 0 <= query.indexA && query.indexA < hullA->edgeCount );
@@ -1174,7 +1177,8 @@ static bool b3BuildEdgeContact( b3LocalManifold* manifold, const b3HullData* hul
 
 	b3LocalManifoldPoint* pt = manifold->points + 0;
 	pt->point = point;
-	pt->separation = separation;
+	// Adjust separation to account for the Minkowski skin radii of both hulls.
+	pt->separation = separation - totalRadius;
 	pt->pair = b3MakeFeaturePair( b3_featureShapeA, query.indexA, b3_featureShapeB, query.indexB );
 
 	// Save cache
@@ -1300,12 +1304,14 @@ static inline void b3GetSupportWide( b3Vec3 normal, const float* vx, const float
 
 // SIMD separating axis test based on an implementation developed by Cairn Overturf.
 // See his article: https://cairno.substack.com/p/improvements-to-the-separating-axis
-b3AxisQuery b3ComputeSeparatingAxis( const b3HullData* hullA, const b3HullData* hullB, b3Transform xfB, bool earlyReturn )
+b3AxisQuery b3ComputeSeparatingAxis( const b3HullData* hullA, const b3HullData* hullB, b3Transform xfB, bool earlyReturn, float totalRadius )
 {
 	b3Matrix3 R = b3MakeMatrixFromQuat( xfB.q );
 	b3Matrix3 invR = b3Transpose( R );
 
-	float speculativeDistance = B3_SPECULATIVE_DISTANCE;
+	// Effective separation threshold: hulls with skin radii effectively push the shapes apart,
+	// so we only declare a separating axis when separation exceeds the combined skin radius.
+	float speculativeDistance = B3_SPECULATIVE_DISTANCE + totalRadius;
 
 	b3AxisQuery res = {
 		.faceA =
@@ -1783,7 +1789,12 @@ void b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* 
 	}
 
 	// Work in shapeA coordinates
-	float speculativeDistance = B3_SPECULATIVE_DISTANCE;
+	// Minkowski sum skin radii: contact points are offset outward by this combined radius.
+	float totalRadius = hullA->skinRadius + hullB->skinRadius;
+
+	// Effective separation threshold: we don't declare shapes separated until they are
+	// far enough apart that even after Minkowski expansion there is no penetration.
+	float speculativeDistance = B3_SPECULATIVE_DISTANCE + totalRadius;
 
 	float linearSlop = B3_LINEAR_SLOP;
 	const b3HullHalfEdge* edgesA = b3GetHullEdges( hullA );
@@ -1831,7 +1842,7 @@ void b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* 
 			faceQuery.type = b3_faceAxisA;
 
 			b3SATCache localCache = { 0 };
-			bool touching = b3BuildFaceAContact( manifold, capacity, hullA, hullB, transformBtoA, faceQuery, &localCache );
+			bool touching = b3BuildFaceAContact( manifold, capacity, hullA, hullB, transformBtoA, faceQuery, &localCache, totalRadius );
 			if ( touching == true && b3AbsFloat( cache->separation - localCache.separation ) < linearSlop )
 			{
 				// Cache hit, contact points generated
@@ -1870,7 +1881,7 @@ void b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* 
 			faceQuery.type = b3_faceAxisB;
 
 			b3SATCache localCache = { 0 };
-			bool touching = b3BuildFaceBContact( manifold, capacity, hullA, hullB, transformBtoA, faceQuery, &localCache );
+			bool touching = b3BuildFaceBContact( manifold, capacity, hullA, hullB, transformBtoA, faceQuery, &localCache, totalRadius );
 			if ( touching == true && b3AbsFloat( cache->separation - localCache.separation ) < linearSlop )
 			{
 				// Cache hit, contact points generated
@@ -1944,7 +1955,7 @@ void b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* 
 					edgeQuery.type = b3_edgePairAxis;
 
 					b3SATCache localCache = { 0 };
-					bool touching = b3BuildEdgeContact( manifold, hullA, hullB, transformBtoA, edgeQuery, &localCache );
+					bool touching = b3BuildEdgeContact( manifold, hullA, hullB, transformBtoA, edgeQuery, &localCache, totalRadius );
 
 					// This separation tolerance may have a big impact on performance in some benchmarks.
 					if ( touching && b3AbsFloat( cache->separation - localCache.separation ) < linearSlop )
@@ -1961,29 +1972,29 @@ void b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* 
 			// This case is for testing
 		case b3_manualFaceAxisA:
 		{
-			b3AxisQuery axisQuery = b3ComputeSeparatingAxis( hullA, hullB, transformBtoA, false );
+			b3AxisQuery axisQuery = b3ComputeSeparatingAxis( hullA, hullB, transformBtoA, false, totalRadius );
 			b3SeparatingAxis faceQuery = axisQuery.faceA;
-			b3BuildFaceAContact( manifold, capacity, hullA, hullB, transformBtoA, faceQuery, cache );
+			b3BuildFaceAContact( manifold, capacity, hullA, hullB, transformBtoA, faceQuery, cache, totalRadius );
 			return;
 		}
 
 			// This case is for testing
 		case b3_manualFaceAxisB:
 		{
-			b3AxisQuery axisQuery = b3ComputeSeparatingAxis( hullA, hullB, transformBtoA, false );
+			b3AxisQuery axisQuery = b3ComputeSeparatingAxis( hullA, hullB, transformBtoA, false, totalRadius );
 			b3SeparatingAxis faceQuery = axisQuery.faceB;
-			b3BuildFaceBContact( manifold, capacity, hullA, hullB, transformBtoA, faceQuery, cache );
+			b3BuildFaceBContact( manifold, capacity, hullA, hullB, transformBtoA, faceQuery, cache, totalRadius );
 			return;
 		}
 
 			// This case is for testing
 		case b3_manualEdgePairAxis:
 		{
-			b3AxisQuery axisQuery = b3ComputeSeparatingAxis( hullA, hullB, transformBtoA, false );
+			b3AxisQuery axisQuery = b3ComputeSeparatingAxis( hullA, hullB, transformBtoA, false, totalRadius );
 			b3SeparatingAxis edgeQuery = axisQuery.edge;
 			if ( edgeQuery.indexA != B3_NULL_INDEX )
 			{
-				b3BuildEdgeContact( manifold, hullA, hullB, transformBtoA, edgeQuery, cache );
+				b3BuildEdgeContact( manifold, hullA, hullB, transformBtoA, edgeQuery, cache, totalRadius );
 			}
 			return;
 		}
@@ -1996,7 +2007,7 @@ void b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* 
 	manifold->pointCount = 0;
 	*cache = (b3SATCache){ 0 };
 
-	b3AxisQuery axisQuery = b3ComputeSeparatingAxis( hullA, hullB, transformBtoA, true );
+	b3AxisQuery axisQuery = b3ComputeSeparatingAxis( hullA, hullB, transformBtoA, true, totalRadius );
 
 	if ( axisQuery.separatedFeature != b3_invalidAxis )
 	{
@@ -2038,7 +2049,7 @@ void b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* 
 		B3_VALIDATE( 0 <= faceQuery.indexB && faceQuery.indexB < hullB->vertexCount );
 
 		// Face contact A
-		b3BuildFaceAContact( manifold, capacity, hullA, hullB, transformBtoA, faceQuery, cache );
+		b3BuildFaceAContact( manifold, capacity, hullA, hullB, transformBtoA, faceQuery, cache, totalRadius );
 
 		B3_VALIDATE( cache->indexA < hullA->faceCount );
 		B3_VALIDATE( cache->indexB < hullB->vertexCount );
@@ -2050,7 +2061,7 @@ void b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* 
 		B3_VALIDATE( 0 <= faceQuery.indexB && faceQuery.indexB < hullB->faceCount );
 
 		// Face contact B
-		b3BuildFaceBContact( manifold, capacity, hullA, hullB, transformBtoA, faceQuery, cache );
+		b3BuildFaceBContact( manifold, capacity, hullA, hullB, transformBtoA, faceQuery, cache, totalRadius );
 
 		B3_VALIDATE( cache->indexA < hullA->vertexCount );
 		B3_VALIDATE( cache->indexB < hullB->faceCount );
@@ -2080,7 +2091,7 @@ void b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* 
 		edgeManifold.points = &edgePoint;
 
 		b3SATCache edgeCache = { 0 };
-		b3BuildEdgeContact( &edgeManifold, hullA, hullB, transformBtoA, edgeQuery, &edgeCache );
+		b3BuildEdgeContact( &edgeManifold, hullA, hullB, transformBtoA, edgeQuery, &edgeCache, totalRadius );
 
 		// It is possible with speculation to have vertex-vertex collision that is missed by SAT,
 		// so edge contact yields no points. In that case perhaps the face contact has some points.

@@ -64,6 +64,11 @@ void DrawSolidCapsule( b3WorldTransform transform, b3Capsule capsule, Vec4 color
 // Convex hull wireframe. Each undirected edge once, in world space.
 void DrawHull( b3WorldTransform transform, const b3HullData* hull, Vec4 color );
 
+/// Draws a wireframe sphere at each hull vertex to visualise the Minkowski skin radius.
+/// Useful for debugging rounded shapes created with hull->skinRadius > 0.
+/// No-op when hull->skinRadius is zero.
+void DrawHullSkin( b3WorldTransform transform, const b3HullData* hull, Vec4 color );
+
 // Plane as a unit wireframe quad through the point, plus a short normal and a dot.
 void DrawPlane( b3Vec3 normal, b3Pos point, Vec4 color );
 

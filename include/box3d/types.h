@@ -1968,7 +1968,7 @@ typedef struct b3HullFace
 } b3HullFace;
 
 /// 64-bit hull version. Useful for validating serialized data.
-#define B3_HULL_VERSION 0xDA5150191B994C01ull
+#define B3_HULL_VERSION 0xDA5150191B994C02ull
 
 /// A convex hull.
 /// @note This data structure has data hanging off the end and cannot be directly copied.
@@ -2031,9 +2031,12 @@ typedef struct b3HullData
 	/// Offset of structure of array (SOA) unit normal vectors
 	int soaNormalOffset;
 
-	/// Explicit padding. Hull identity is a content hash and memcmp over raw bytes,
+	/// Minkowski sum skin radius. Expands the hull outward uniformly (Pure Expand).
+	/// A non-zero value smooths edges and vertices with a sphere of this radius.
+	/// Zero (default) preserves the existing sharp-edge behaviour exactly.
+	/// Hull identity is a content hash and memcmp over raw bytes,
 	/// so there must be no unnamed padding for struct copies to scramble.
-	int padding;
+	float skinRadius;
 } b3HullData;
 
 /// Efficient box hull

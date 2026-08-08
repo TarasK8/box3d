@@ -1007,6 +1007,8 @@ void b3CollideTriangleAndHull( b3LocalManifold* manifold, int capacity, b3Vec3 v
 	const b3Vec3* hullPoints = b3GetHullPoints( hullB );
 
 	float speculativeDistance = enableSpeculative ? B3_SPECULATIVE_DISTANCE : 0.0f;
+	// Include the hull's skin radius: the rounded hull acts like it's larger by skinRadius.
+	speculativeDistance += hullB->skinRadius;
 	cache->hit = 1;
 
 	// Attempt to use the cache to speed up collision
@@ -1303,7 +1305,7 @@ void b3CollideTriangleAndHull( b3LocalManifold* manifold, int capacity, b3Vec3 v
 			.count = 3,
 			.radius = 0.0f,
 		};
-		input.proxyB = (b3ShapeProxy){ .points = hullPoints, .count = hullB->vertexCount, .radius = 0.0f };
+		input.proxyB = (b3ShapeProxy){ .points = hullPoints, .count = hullB->vertexCount, .radius = hullB->skinRadius };
 		input.transform = b3Transform_identity;
 		input.useRadii = false;
 
@@ -1318,7 +1320,7 @@ void b3CollideTriangleAndHull( b3LocalManifold* manifold, int capacity, b3Vec3 v
 			manifold->feature = b3GetTriangleFeature( &simplexCache );
 			manifold->normal = output.normal;
 			manifold->points[0].point = output.pointB;
-			manifold->points[0].separation = output.distance;
+			manifold->points[0].separation = output.distance - hullB->skinRadius;
 
 			// This feature pair not accurate but maybe it doesn't matter
 			manifold->points[0].pair = b3FeaturePair_single;

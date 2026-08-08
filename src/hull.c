@@ -1774,6 +1774,11 @@ bool b3IsValidHull( const b3HullData* hull )
 		return false;
 	}
 
+	if ( hull->skinRadius < 0.0f )
+	{
+		return false;
+	}
+
 	return true;
 }
 
@@ -2015,6 +2020,7 @@ static bool b3UpdateHullBulkProperties( b3HullData* hull )
 	hull->volume = mass;
 	hull->surfaceArea = 0.5f * area;
 	hull->innerRadius = radius;
+	hull->skinRadius = 0.0f;
 
 	if ( mass <= 0.0f )
 	{
@@ -2513,21 +2519,36 @@ b3MassData b3ComputeHullMass( const b3HullData* shape, float density )
 	out.mass = density * shape->volume;
 	out.center = shape->center;
 
-	// Inertia about the center of mass
+	// Inertia about the center of mass.
+	// TODO: add Minkowski-sphere shell contribution when skinRadius > 0 for more accurate mass.
 	out.inertia = b3MulSM( density, shape->centralInertia );
 	return out;
 }
 
 b3AABB b3ComputeHullAABB( const b3HullData* shape, b3Transform transform )
 {
-	return b3AABB_Transform( transform, shape->aabb );
+	b3AABB aabb = b3AABB_Transform( transform, shape->aabb );
+	if ( shape->skinRadius > 0.0f )
+	{
+		b3Vec3 r = { shape->skinRadius, shape->skinRadius, shape->skinRadius };
+		aabb.lowerBound = b3Sub( aabb.lowerBound, r );
+		aabb.upperBound = b3Add( aabb.upperBound, r );
+	}
+	return aabb;
 }
 
 b3AABB b3ComputeSweptHullAABB( const b3HullData* shape, b3Transform xf1, b3Transform xf2 )
 {
 	b3AABB aabb1 = b3AABB_Transform( xf1, shape->aabb );
 	b3AABB aabb2 = b3AABB_Transform( xf2, shape->aabb );
-	return b3AABB_Union( aabb1, aabb2 );
+	b3AABB aabb = b3AABB_Union( aabb1, aabb2 );
+	if ( shape->skinRadius > 0.0f )
+	{
+		b3Vec3 r = { shape->skinRadius, shape->skinRadius, shape->skinRadius };
+		aabb.lowerBound = b3Sub( aabb.lowerBound, r );
+		aabb.upperBound = b3Add( aabb.upperBound, r );
+	}
+	return aabb;
 }
 
 bool b3OverlapHull( const b3HullData* shape, b3Transform shapeTransform, const b3ShapeProxy* proxy )
@@ -2784,6 +2805,7 @@ b3BoxHull b3MakeTransformedBoxHull( float hx, float hy, float hz, b3Transform tr
 	boxHull.base.surfaceArea = 8.0f * ( h.x * h.y + h.x * h.z + h.y * h.z );
 	boxHull.base.volume = 8.0f * h.x * h.y * h.z;
 	boxHull.base.innerRadius = b3MinFloat( h.x, b3MinFloat( h.y, h.z ) );
+	boxHull.base.skinRadius = 0.0f;
 	boxHull.base.center = transform.p;
 
 	b3Matrix3 boxInertia = b3BoxInertia( boxHull.base.volume, b3Neg( h ), h );
