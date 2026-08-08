@@ -102,7 +102,7 @@ void CreateLargePyramid( b3WorldId worldId )
 {
 	b3World_EnableSleeping( worldId, false );
 
-	int baseCount = BENCHMARK_DEBUG ? 20 : 100;
+	int baseCount = BENCHMARK_DEBUG ? 100 : 100;
 
 	{
 		b3BodyDef bodyDef = b3DefaultBodyDef();
