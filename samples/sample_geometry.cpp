@@ -646,3 +646,183 @@ public:
 };
 
 static int sampleCapsuleMass = RegisterSample( "Geometry", "Capsule Mass", CapsuleMass::Create );
+
+class WheelRolling : public Sample
+{
+public:
+	explicit WheelRolling( SampleContext* context )
+		: Sample( context )
+	{
+		if ( m_context->restart == false )
+		{
+			m_camera->SetView( -45.0f, 20.0f, 35.0f, { 0.0f, 1.0f, 15.0f } );
+		}
+
+		AddGroundBox( 200.0f );
+
+		m_radius = 1.0f;
+		m_height = 2.0f;
+		m_torqueImpulse = 5000.0f;
+		m_friction = 0.8f;
+
+		m_cylinder24 = nullptr;
+		m_cylinder32 = nullptr;
+
+		for ( int i = 0; i < 3; ++i )
+		{
+			m_bodyIds[i] = b3_nullBodyId;
+			m_shapeIds[i] = b3_nullShapeId;
+		}
+
+		// Create cylinder hulls oriented along X-axis
+		b3Quat q = b3MakeQuatFromAxisAngle( b3Vec3_axisZ, 0.5f * B3_PI );
+
+		b3HullData* temp24 = b3CreateCylinder( m_height, m_radius, -0.5f * m_height, 24 );
+		m_cylinder24 = b3CloneAndTransformHull( temp24, { b3Vec3_zero, q }, { 1.0f, 1.0f, 1.0f } );
+		b3DestroyHull( temp24 );
+
+		b3HullData* temp32 = b3CreateCylinder( m_height, m_radius, -0.5f * m_height, 32 );
+		m_cylinder32 = b3CloneAndTransformHull( temp32, { b3Vec3_zero, q }, { 1.0f, 1.0f, 1.0f } );
+		b3DestroyHull( temp32 );
+
+		CreateBodies();
+	}
+
+	~WheelRolling() override
+	{
+		if ( m_cylinder24 != nullptr )
+		{
+			b3DestroyHull( m_cylinder24 );
+		}
+
+		if ( m_cylinder32 != nullptr )
+		{
+			b3DestroyHull( m_cylinder32 );
+		}
+	}
+
+	void CreateBodies()
+	{
+		for ( int i = 0; i < 3; ++i )
+		{
+			if ( B3_IS_NON_NULL( m_bodyIds[i] ) )
+			{
+				b3DestroyBody( m_bodyIds[i] );
+				m_bodyIds[i] = b3_nullBodyId;
+				m_shapeIds[i] = b3_nullShapeId;
+			}
+		}
+
+		b3BodyDef bodyDef = b3DefaultBodyDef();
+		bodyDef.type = b3_dynamicBody;
+
+		b3ShapeDef shapeDef = b3DefaultShapeDef();
+		shapeDef.baseMaterial.friction = m_friction;
+
+		float spacing = 5.0f;
+		b3Vec3 positions[3] = {
+			{ -spacing, m_radius, 0.0f },
+			{ 0.0f, m_radius, 0.0f },
+			{ spacing, m_radius, 0.0f }
+		};
+
+		// 1. Capsule lying on its side (axis along X)
+		b3Capsule capsule = { { -0.5f * m_height, 0.0f, 0.0f }, { 0.5f * m_height, 0.0f, 0.0f }, m_radius };
+		bodyDef.position = positions[0];
+		bodyDef.name = "Capsule";
+		m_bodyIds[0] = b3CreateBody( m_worldId, &bodyDef );
+		m_shapeIds[0] = b3CreateCapsuleShape( m_bodyIds[0], &shapeDef, &capsule );
+
+		// 2. Cylinder with 24 subdivisions (axis along X)
+		bodyDef.position = positions[1];
+		bodyDef.name = "Cylinder 24";
+		m_bodyIds[1] = b3CreateBody( m_worldId, &bodyDef );
+		m_shapeIds[1] = b3CreateHullShape( m_bodyIds[1], &shapeDef, m_cylinder24 );
+
+		// 3. Cylinder with 32 subdivisions (axis along X)
+		bodyDef.position = positions[2];
+		bodyDef.name = "Cylinder 32";
+		m_bodyIds[2] = b3CreateBody( m_worldId, &bodyDef );
+		m_shapeIds[2] = b3CreateHullShape( m_bodyIds[2], &shapeDef, m_cylinder32 );
+
+		// Apply initial torque impulse around X axis at the start of simulation
+		b3Vec3 torqueImpulse = { m_torqueImpulse, 0.0f, 0.0f };
+		for ( int i = 0; i < 3; ++i )
+		{
+			b3Body_ApplyAngularImpulse( m_bodyIds[i], torqueImpulse, true );
+		}
+	}
+
+	bool DrawControls() override
+	{
+		float fontSize = ImGui::GetFontSize();
+		ImGui::PushItemWidth( 10.0f * fontSize );
+
+		ImGui::SliderFloat( "Torque Impulse", &m_torqueImpulse, 1.0f, 10000.0f, "%.1f" );
+
+		if ( ImGui::SliderFloat( "Friction", &m_friction, 0.0f, 1.0f, "%.2f" ) )
+		{
+			for ( int i = 0; i < 3; ++i )
+			{
+				if ( B3_IS_NON_NULL( m_shapeIds[i] ) )
+				{
+					b3Shape_SetFriction( m_shapeIds[i], m_friction );
+				}
+			}
+		}
+
+		if ( ImGui::Button( "Reset / Re-roll" ) )
+		{
+			CreateBodies();
+		}
+
+		ImGui::PopItemWidth();
+		return true;
+	}
+
+	void Render() override
+	{
+		const char* names[3] = { "Capsule", "Cylinder (24 sides)", "Cylinder (32 sides)" };
+		Vec4 colors[3] = { MakeColor( b3_colorGreen ), MakeColor( b3_colorYellow ), MakeColor( b3_colorCyan ) };
+
+		DrawTextLine( "Wheel Rolling Comparison (Torque Impulse = %.1f, Friction = %.2f):", m_torqueImpulse, m_friction );
+
+		for ( int i = 0; i < 3; ++i )
+		{
+			if ( B3_IS_NON_NULL( m_bodyIds[i] ) )
+			{
+				b3Pos pos = b3Body_GetPosition( m_bodyIds[i] );
+				b3Vec3 vel = b3Body_GetLinearVelocity( m_bodyIds[i] );
+				b3Vec3 angVel = b3Body_GetAngularVelocity( m_bodyIds[i] );
+				float speed = b3Length( vel );
+				bool awake = b3Body_IsAwake( m_bodyIds[i] );
+
+				DrawTextLine( "%s: Dist = %.2fm | Speed = %.2fm/s | AngVel = %.2frad/s | %s",
+							  names[i], pos.z, speed, angVel.x, awake ? "Rolling" : "Stopped" );
+
+				b3Pos labelPos = { pos.x, pos.y + 1.5f, pos.z };
+				DrawString3D( labelPos, colors[i], "%s (z=%.1fm)", names[i], pos.z );
+			}
+		}
+
+		Sample::Render();
+	}
+
+	static Sample* Create( SampleContext* sampleContext )
+	{
+		return new WheelRolling( sampleContext );
+	}
+
+	b3HullData* m_cylinder24;
+	b3HullData* m_cylinder32;
+	b3BodyId m_bodyIds[3];
+	b3ShapeId m_shapeIds[3];
+
+	float m_radius;
+	float m_height;
+	float m_torqueImpulse;
+	float m_friction;
+};
+
+static int sampleWheelRolling = RegisterSample( "Geometry", "Wheels", WheelRolling::Create );
+
