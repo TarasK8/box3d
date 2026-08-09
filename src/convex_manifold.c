@@ -1807,6 +1807,13 @@ void b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* 
 
 	cache->hit = 0;
 
+	if ( totalRadius > 0.0f )
+	{
+		// SAT cache can lock onto stale sharp-feature face queries during rotation for rounded hulls.
+		// Force full axis query and GJK validation every frame when skinRadius > 0.
+		cache->type = b3_invalidAxis;
+	}
+
 	// Attempt to use the cache to speed up collision
 	switch ( cache->type )
 	{
@@ -2105,7 +2112,61 @@ void b3CollideHulls( b3LocalManifold* manifold, int capacity, const b3HullData* 
 			*cache = edgeCache;
 		}
 	}
+
+	if ( totalRadius > 0.0f )
+	{
+		// For rounded hulls, validate that SAT contact separation matches the true GJK distance between the expanded surfaces.
+		// SAT face clipping projects features onto sharp reference planes, which can create false penetration when non-parallel
+		// features (corners or bevels) touch. GJK computes the exact minimum distance and true normal between the rounded skins.
+		b3DistanceInput distanceInput;
+		distanceInput.proxyA = (b3ShapeProxy){ pointsA, hullA->vertexCount, 0.0f };
+		distanceInput.proxyB = (b3ShapeProxy){ pointsB, hullB->vertexCount, 0.0f };
+		distanceInput.transform = transformBtoA;
+		distanceInput.useRadii = false;
+
+		b3SimplexCache simplexCache = { 0 };
+		b3DistanceOutput distanceOutput = b3ShapeDistance( &distanceInput, &simplexCache, NULL, 0 );
+		float gjkSeparation = distanceOutput.distance - totalRadius;
+
+		float minManifoldSeparation = FLT_MAX;
+		for ( int i = 0; i < manifold->pointCount; ++i )
+		{
+			minManifoldSeparation = b3MinFloat( minManifoldSeparation, manifold->points[i].separation );
+		}
+
+		if ( manifold->pointCount == 0 || minManifoldSeparation < gjkSeparation - linearSlop )
+		{
+			b3Vec3 delta = b3Sub( distanceOutput.pointB, distanceOutput.pointA );
+			float len = b3Length( delta );
+			b3Vec3 normal;
+			if ( len > 1e-6f )
+			{
+				normal = b3MulSV( 1.0f / len, delta );
+			}
+			else if ( manifold->pointCount > 0 )
+			{
+				normal = manifold->normal;
+			}
+			else
+			{
+				normal = (b3Vec3){ 0.0f, 1.0f, 0.0f };
+			}
+
+			b3Vec3 cA = b3MulAdd( distanceOutput.pointA, hullA->skinRadius, normal );
+			b3Vec3 cB = b3MulSub( distanceOutput.pointB, hullB->skinRadius, normal );
+			b3Vec3 point = b3Lerp( cA, cB, 0.5f );
+
+			manifold->normal = normal;
+			manifold->pointCount = 1;
+
+			b3LocalManifoldPoint* pt = manifold->points + 0;
+			pt->point = point;
+			pt->separation = gjkSeparation;
+			pt->pair = b3FeaturePair_single;
+		}
+	}
 }
+
 
 #else
 
