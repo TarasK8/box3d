@@ -293,7 +293,215 @@ static b3Vec3 TriangleNormal( b3Vec3 a, b3Vec3 b, b3Vec3 c )
 	return n;
 }
 
-static MeshHandle BuildHull( const b3HullData* hull )
+static bool EmitSmoothTriangle( BuildBuffer* b, b3Vec3 p0, b3Vec3 n0, b3Vec3 p1, b3Vec3 n1, b3Vec3 p2, b3Vec3 n2 )
+{
+	if ( !BufferReserveVertices( b, 3 ) || !BufferReserveIndices( b, 3 ) )
+	{
+		return false;
+	}
+
+	MeshVertex* v = &b->vertices[b->vertexCount];
+	v[0].position[0] = p0.x;
+	v[0].position[1] = p0.y;
+	v[0].position[2] = p0.z;
+	v[0].normal[0] = n0.x;
+	v[0].normal[1] = n0.y;
+	v[0].normal[2] = n0.z;
+
+	v[1].position[0] = p1.x;
+	v[1].position[1] = p1.y;
+	v[1].position[2] = p1.z;
+	v[1].normal[0] = n1.x;
+	v[1].normal[1] = n1.y;
+	v[1].normal[2] = n1.z;
+
+	v[2].position[0] = p2.x;
+	v[2].position[1] = p2.y;
+	v[2].position[2] = p2.z;
+	v[2].normal[0] = n2.x;
+	v[2].normal[1] = n2.y;
+	v[2].normal[2] = n2.z;
+
+	const uint32_t base = (uint32_t)b->vertexCount;
+	b->indices[b->indexCount + 0] = base + 0u;
+	b->indices[b->indexCount + 1] = base + 1u;
+	b->indices[b->indexCount + 2] = base + 2u;
+
+	b->vertexCount += 3;
+	b->indexCount += 3;
+	return true;
+}
+
+static bool BuildRoundedHullGeometry( BuildBuffer* buf, EdgeBuilder* eb, const b3HullData* hull )
+{
+	const b3Vec3* points = b3GetHullPoints( hull );
+	const b3HullHalfEdge* edges = b3GetHullEdges( hull );
+	const b3HullFace* faces = b3GetHullFaces( hull );
+	const b3Plane* planes = b3GetHullPlanes( hull );
+	const b3HullVertex* vertices = b3GetHullVertices( hull );
+	const float r = hull->skinRadius;
+
+	const int S = 4;
+
+	// 1. Emit offset faces
+	for ( int faceIdx = 0; faceIdx < hull->faceCount; ++faceIdx )
+	{
+		const b3HullFace face = faces[faceIdx];
+		const b3Vec3 normal = planes[faceIdx].normal;
+		const uint8_t startEdge = face.edge;
+
+		uint8_t e = startEdge;
+		int loopLen = 0;
+		do
+		{
+			loopLen += 1;
+			e = edges[e].next;
+			if ( loopLen > 256 )
+			{
+				return false;
+			}
+		}
+		while ( e != startEdge );
+
+		if ( loopLen < 3 )
+		{
+			continue;
+		}
+
+		uint8_t loop[256];
+		e = startEdge;
+		for ( int i = 0; i < loopLen; ++i )
+		{
+			loop[i] = edges[e].origin;
+			e = edges[e].next;
+		}
+
+		b3Vec3 p0 = b3Add( points[loop[0]], b3MulSV( r, normal ) );
+		for ( int i = 1; i < loopLen - 1; ++i )
+		{
+			b3Vec3 p1 = b3Add( points[loop[i]], b3MulSV( r, normal ) );
+			b3Vec3 p2 = b3Add( points[loop[i + 1]], b3MulSV( r, normal ) );
+			if ( !EmitFlatTriangle( buf, p0, p1, p2, normal ) )
+			{
+				return false;
+			}
+		}
+	}
+
+	// 2. Emit cylindrical edge bevels
+	int pairCount = hull->edgeCount / 2;
+	for ( int i = 0; i < pairCount; ++i )
+	{
+		const b3HullHalfEdge* e1 = &edges[2 * i + 0];
+		const b3HullHalfEdge* e2 = &edges[2 * i + 1];
+
+		uint32_t vA_idx = e1->origin;
+		uint32_t vB_idx = e2->origin;
+
+		b3Vec3 vA = points[vA_idx];
+		b3Vec3 vB = points[vB_idx];
+
+		b3Vec3 n1 = planes[e1->face].normal;
+		b3Vec3 n2 = planes[e2->face].normal;
+
+		float dot = b3Dot( n1, n2 );
+		if ( dot >= 0.9999f )
+		{
+			if ( eb )
+			{
+				EmitEdge( eb, vA_idx, vB_idx, 1u );
+			}
+			continue;
+		}
+
+		for ( int k = 0; k < S; ++k )
+		{
+			float t0 = (float)k / (float)S;
+			float t1 = (float)( k + 1 ) / (float)S;
+
+			b3Vec3 nk0 = b3Normalize( b3Add( b3MulSV( 1.0f - t0, n1 ), b3MulSV( t0, n2 ) ) );
+			b3Vec3 nk1 = b3Normalize( b3Add( b3MulSV( 1.0f - t1, n1 ), b3MulSV( t1, n2 ) ) );
+
+			b3Vec3 pA0 = b3Add( vA, b3MulSV( r, nk0 ) );
+			b3Vec3 pB0 = b3Add( vB, b3MulSV( r, nk0 ) );
+			b3Vec3 pA1 = b3Add( vA, b3MulSV( r, nk1 ) );
+			b3Vec3 pB1 = b3Add( vB, b3MulSV( r, nk1 ) );
+
+			if ( !EmitSmoothTriangle( buf, pA0, nk0, pA1, nk1, pB1, nk1 ) ) return false;
+			if ( !EmitSmoothTriangle( buf, pA0, nk0, pB1, nk1, pB0, nk0 ) ) return false;
+		}
+
+		if ( eb )
+		{
+			EmitEdge( eb, vA_idx, vB_idx, 1u );
+		}
+	}
+
+	// 3. Emit spherical corner patches for vertices
+	for ( int vertIdx = 0; vertIdx < hull->vertexCount; ++vertIdx )
+	{
+		b3Vec3 vPos = points[vertIdx];
+		uint8_t startEdgeIdx = vertices[vertIdx].edge;
+
+		b3Vec3 faceNormals[64];
+		int faceCount = 0;
+
+		uint8_t currEdgeIdx = startEdgeIdx;
+		do
+		{
+			if ( faceCount >= 64 ) break;
+
+			const b3HullHalfEdge* currEdge = &edges[currEdgeIdx];
+			uint8_t fIdx = currEdge->face;
+			faceNormals[faceCount++] = planes[fIdx].normal;
+
+			uint8_t twinIdx = currEdge->twin;
+			currEdgeIdx = edges[twinIdx].next;
+		}
+		while ( currEdgeIdx != startEdgeIdx && faceCount < 64 );
+
+		if ( faceCount < 3 ) continue;
+
+		b3Vec3 nCenter = b3Vec3_zero;
+		for ( int i = 0; i < faceCount; ++i )
+		{
+			nCenter = b3Add( nCenter, faceNormals[i] );
+		}
+		float len = b3Length( nCenter );
+		if ( len <= 1e-6f ) continue;
+		nCenter = b3MulSV( 1.0f / len, nCenter );
+
+		b3Vec3 pCenter = b3Add( vPos, b3MulSV( r, nCenter ) );
+
+		for ( int i = 0; i < faceCount; ++i )
+		{
+			b3Vec3 nA = faceNormals[i];
+			b3Vec3 nB = faceNormals[( i + 1 ) % faceCount];
+
+			float dot = b3Dot( nA, nB );
+			if ( dot >= 0.9999f ) continue;
+
+			for ( int k = 0; k < S; ++k )
+			{
+				float t0 = (float)k / (float)S;
+				float t1 = (float)( k + 1 ) / (float)S;
+
+				b3Vec3 nk0 = b3Normalize( b3Add( b3MulSV( 1.0f - t0, nA ), b3MulSV( t0, nB ) ) );
+				b3Vec3 nk1 = b3Normalize( b3Add( b3MulSV( 1.0f - t1, nA ), b3MulSV( t1, nB ) ) );
+
+				b3Vec3 p0 = b3Add( vPos, b3MulSV( r, nk0 ) );
+				b3Vec3 p1 = b3Add( vPos, b3MulSV( r, nk1 ) );
+
+				if ( !EmitSmoothTriangle( buf, pCenter, nCenter, p1, nk1, p0, nk0 ) ) return false;
+			}
+		}
+	}
+
+
+	return true;
+}
+
+static MeshHandle BuildHull( const b3HullData* hull, uint32_t meshHash )
 {
 	const b3Vec3* points = b3GetHullPoints( hull );
 	const b3HullHalfEdge* edges = b3GetHullEdges( hull );
@@ -308,57 +516,75 @@ static MeshHandle BuildHull( const b3HullData* hull )
 	BuildBuffer buf = { 0 };
 	EdgeBuilder eb = { 0 };
 
-	// Per-face fan triangulation. Each face's half-edges form a CCW loop
-	// (viewed from outside, against the face's outward normal). The fan
-	// pivot is the loop's first vertex, subsequent triangles are
-	// (v0, v_i, v_{i+1}) for i from 1 to count-2. Plane normal carries
-	// the outward direction.
-	for ( int faceIdx = 0; faceIdx < hull->faceCount; ++faceIdx )
+	if ( hull->skinRadius > 0.0f )
 	{
-		const b3HullFace face = faces[faceIdx];
-		const b3Vec3 normal = planes[faceIdx].normal;
-		const uint8_t startEdge = face.edge;
-
-		// First pass: count loop length so we know how to fan it. b3 hull
-		// faces are bounded (max half-edge count fits a uint8_t) so this
-		// terminates cleanly.
-		uint8_t e = startEdge;
-		int loopLen = 0;
-		do
+		if ( !BuildRoundedHullGeometry( &buf, &eb, hull ) )
 		{
-			loopLen += 1;
-			e = edges[e].next;
-			if ( loopLen > 256 )
+			EdgeBuilderFree( &eb );
+			BufferFree( &buf );
+			return InvalidMeshHandle();
+		}
+	}
+	else
+	{
+		// Per-face fan triangulation. Each face's half-edges form a CCW loop.
+		for ( int faceIdx = 0; faceIdx < hull->faceCount; ++faceIdx )
+		{
+			const b3HullFace face = faces[faceIdx];
+			const b3Vec3 normal = planes[faceIdx].normal;
+			const uint8_t startEdge = face.edge;
+
+			uint8_t e = startEdge;
+			int loopLen = 0;
+			do
 			{
-				fprintf( stderr, "error: hull face loop runaway (hash=0x%08x)\n", hull->hash );
-				BufferFree( &buf );
-				return InvalidMeshHandle();
+				loopLen += 1;
+				e = edges[e].next;
+				if ( loopLen > 256 )
+				{
+					fprintf( stderr, "error: hull face loop runaway (hash=0x%08x)\n", hull->hash );
+					BufferFree( &buf );
+					return InvalidMeshHandle();
+				}
+			}
+			while ( e != startEdge );
+
+			if ( loopLen < 3 )
+			{
+				continue;
+			}
+
+			uint8_t loop[256];
+			e = startEdge;
+			for ( int i = 0; i < loopLen; ++i )
+			{
+				loop[i] = edges[e].origin;
+				e = edges[e].next;
+			}
+
+			b3Vec3 p0 = points[loop[0]];
+			for ( int i = 1; i < loopLen - 1; ++i )
+			{
+				b3Vec3 p1 = points[loop[i]];
+				b3Vec3 p2 = points[loop[i + 1]];
+				if ( !EmitFlatTriangle( &buf, p0, p1, p2, normal ) )
+				{
+					BufferFree( &buf );
+					return InvalidMeshHandle();
+				}
 			}
 		}
-		while ( e != startEdge );
 
-		if ( loopLen < 3 )
+		// Emit hull edges.
+		int pairCount = hull->edgeCount / 2;
+		for ( int i = 0; i < pairCount; i += 1 )
 		{
-			continue;
-		}
+			uint8_t a = edges[2 * i + 0].origin;
+			uint8_t c = edges[2 * i + 1].origin;
 
-		// Second pass: emit fan. Collect the loop's vertex indices on the stack.
-		// loopLen <= 256.
-		uint8_t loop[256];
-		e = startEdge;
-		for ( int i = 0; i < loopLen; ++i )
-		{
-			loop[i] = edges[e].origin;
-			e = edges[e].next;
-		}
-
-		b3Vec3 p0 = points[loop[0]];
-		for ( int i = 1; i < loopLen - 1; ++i )
-		{
-			b3Vec3 p1 = points[loop[i]];
-			b3Vec3 p2 = points[loop[i + 1]];
-			if ( !EmitFlatTriangle( &buf, p0, p1, p2, normal ) )
+			if ( !EmitEdge( &eb, (uint32_t)a, (uint32_t)c, 1u ) )
 			{
+				EdgeBuilderFree( &eb );
 				BufferFree( &buf );
 				return InvalidMeshHandle();
 			}
@@ -371,22 +597,7 @@ static MeshHandle BuildHull( const b3HullData* hull )
 		return InvalidMeshHandle();
 	}
 
-	// Emit hull edges. This automatically prevents duplicates. No sorting needed.
-	int pairCount = hull->edgeCount / 2;
-	for ( int i = 0; i < pairCount; i += 1 )
-	{
-		uint8_t a = edges[2 * i + 0].origin;
-		uint8_t c = edges[2 * i + 1].origin;
-
-		if ( !EmitEdge( &eb, (uint32_t)a, (uint32_t)c, 1u ) )
-		{
-			EdgeBuilderFree( &eb );
-			BufferFree( &buf );
-			return InvalidMeshHandle();
-		}
-	}
-
-	MeshHandle h = RegisterMesh( hull->hash, buf.vertices, buf.vertexCount, buf.indices, buf.indexCount, "geom_hull" );
+	MeshHandle h = RegisterMesh( meshHash, buf.vertices, buf.vertexCount, buf.indices, buf.indexCount, "geom_hull" );
 
 	if ( IsMeshHandleValid( h ) )
 	{
@@ -406,6 +617,7 @@ static MeshHandle BuildHull( const b3HullData* hull )
 	BufferFree( &buf );
 	return h;
 }
+
 
 // Mesh edge sort/dedup. EdgeRecord is canonicalized (v0 <= v1) by emitEdge,
 // so a shared interior edge from two adjacent triangles compares equal and
@@ -796,15 +1008,26 @@ MeshHandle FindOrAddHull( const b3HullData* hull )
 		return InvalidMeshHandle();
 	}
 
-	MeshHandle existing = FindMesh( hull->hash );
+	uint32_t hash = hull->hash;
+	if ( hull->skinRadius > 0.0f )
+	{
+		hash = b3Hash( hash, (const uint8_t*)&hull->skinRadius, (int)sizeof( float ) );
+		if ( hash == 0u )
+		{
+			hash = 1u;
+		}
+	}
+
+	MeshHandle existing = FindMesh( hash );
 	if ( IsMeshHandleValid( existing ) )
 	{
 		AddMeshReference( existing );
 		return existing;
 	}
 
-	return BuildHull( hull );
+	return BuildHull( hull, hash );
 }
+
 
 MeshHandle FindOrAddMesh( const b3MeshData* meshData )
 {
