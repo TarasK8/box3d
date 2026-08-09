@@ -2556,7 +2556,7 @@ bool b3OverlapHull( const b3HullData* shape, b3Transform shapeTransform, const b
 	const b3Vec3* points = b3GetHullPoints( shape );
 
 	b3DistanceInput input;
-	input.proxyA = (b3ShapeProxy){ points, shape->vertexCount, 0.0f };
+	input.proxyA = (b3ShapeProxy){ points, shape->vertexCount, shape->skinRadius };
 	input.proxyB = *proxy;
 	input.transform = b3InvMulTransforms( shapeTransform, b3Transform_identity );
 	input.useRadii = true;
@@ -2569,6 +2569,22 @@ bool b3OverlapHull( const b3HullData* shape, b3Transform shapeTransform, const b
 b3CastOutput b3RayCastHull( const b3HullData* shape, const b3RayCastInput* input )
 {
 	B3_ASSERT( b3IsValidRay( input ) );
+
+	if ( shape->skinRadius > 0.0f )
+	{
+		const b3Vec3* points = b3GetHullPoints( shape );
+
+		b3ShapeCastPairInput pairInput;
+		pairInput.proxyA = (b3ShapeProxy){ points, shape->vertexCount, shape->skinRadius };
+		pairInput.proxyB = (b3ShapeProxy){ &input->origin, 1, 0.0f };
+		pairInput.transform = b3Transform_identity;
+		pairInput.translationB = input->translation;
+		pairInput.maxFraction = input->maxFraction;
+		pairInput.canEncroach = false;
+
+		return b3ShapeCast( &pairInput );
+	}
+
 	b3CastOutput output = { 0 };
 
 	float lower = 0.0f;
@@ -2639,7 +2655,7 @@ b3CastOutput b3ShapeCastHull( const b3HullData* shape, const b3ShapeCastInput* i
 	const b3Vec3* points = b3GetHullPoints( shape );
 
 	b3ShapeCastPairInput pairInput;
-	pairInput.proxyA = (b3ShapeProxy){ points, shape->vertexCount, 0.0f };
+	pairInput.proxyA = (b3ShapeProxy){ points, shape->vertexCount, shape->skinRadius };
 	pairInput.proxyB = input->proxy;
 	pairInput.transform = b3Transform_identity;
 	pairInput.translationB = input->translation;
@@ -2654,12 +2670,13 @@ int b3CollideMoverAndHull( b3PlaneResult* result, const b3HullData* shape, const
 {
 	const b3Vec3* points = b3GetHullPoints( shape );
 	b3DistanceInput distanceInput;
-	distanceInput.proxyA = (b3ShapeProxy){ points, shape->vertexCount, 0.0f };
+	distanceInput.proxyA = (b3ShapeProxy){ points, shape->vertexCount, shape->skinRadius };
 	distanceInput.proxyB = (b3ShapeProxy){ &mover->center1, 2, mover->radius };
 	distanceInput.transform = b3Transform_identity;
 	distanceInput.useRadii = false;
 
-	float totalRadius = mover->radius;
+	float totalRadius = mover->radius + shape->skinRadius;
+
 
 	b3SimplexCache cache = { 0 };
 	b3DistanceOutput distanceOutput = b3ShapeDistance( &distanceInput, &cache, NULL, 0 );
