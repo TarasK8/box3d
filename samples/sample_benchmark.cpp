@@ -989,6 +989,33 @@ public:
 
 static int benchmarkWasher = RegisterSample( "Benchmark", "Washer", BenchmarkWasher::Create );
 
+class BenchmarkWasherRounded : public Sample
+{
+public:
+	explicit BenchmarkWasherRounded( SampleContext* context )
+		: Sample( context )
+	{
+		if ( m_context->restart == false )
+		{
+			m_camera->SetView( 15.0f, 20.0f, 60.0, { 0.0f, 15.0f, 0.0f } );
+		}
+
+		b3Capacity capacity = {};
+		GetWasherCapacity( &capacity );
+		CreateWorld( &capacity );
+
+		CreateWasherRounded( m_worldId );
+		SetGroundShape( GetGroundShapeId() );
+	}
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new BenchmarkWasherRounded( context );
+	}
+};
+
+static int benchmarkWasherRounded = RegisterSample( "Benchmark", "Washer (Rounded)", BenchmarkWasherRounded::Create );
+
 class BenchmarkLargeWorld : public Sample
 {
 public:

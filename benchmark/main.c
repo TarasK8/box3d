@@ -161,6 +161,7 @@ int main( int argc, char** argv )
 		{ "trees50", NULL, CreateTrees50, DestroyTrees, NULL, 500 },
 		{ "trees25", NULL, CreateTrees25, DestroyTrees, NULL, 500 },
 		{ "washer", GetWasherCapacity, CreateWasher, NULL, NULL, 1000 },
+		{ "washer_rounded", GetWasherCapacity, CreateWasherRounded, NULL, NULL, 1000 },
 		//{ "smash", CreateSmash, NULL, 300 },
 		//{ "spinner", CreateSpinner, StepSpinner, 1400 },
 		//{ "tumbler", CreateTumbler, NULL, 750 },

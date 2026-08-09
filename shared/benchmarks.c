@@ -532,7 +532,7 @@ void GetWasherCapacity( b3Capacity* capacity )
 	capacity->contactCount = 60000;
 }
 
-void CreateWasher( b3WorldId worldId )
+static void CreateWasherEx( b3WorldId worldId, float skinRadius )
 {
 	bool kinematic = true;
 
@@ -646,32 +646,46 @@ void CreateWasher( b3WorldId worldId )
 	float a = 0.2f;
 
 	b3BoxHull cube = b3MakeBoxHull( a, a, a );
+	cube.base.skinRadius = skinRadius;
+
 	b3BodyDef bodyDef = b3DefaultBodyDef();
 	bodyDef.type = b3_dynamicBody;
 	b3ShapeDef shapeDef = b3DefaultShapeDef();
 
-	float x = -2.0f * a * gridCount;
+	float spacing = 4.0f * a + 2.0f * skinRadius;
+	float x = -0.5f * spacing * gridCount;
 	for ( int i = 0; i < gridCount; ++i )
 	{
-		float y = -2.0f * a * gridCount + 21.0f;
+		float y = -0.5f * spacing * gridCount + 21.0f;
 		for ( int j = 0; j < gridCount; ++j )
 		{
-			float z = -2.0f * a * gridCount;
+			float z = -0.5f * spacing * gridCount;
 			for ( int k = 0; k < gridCount; ++k )
 			{
 				bodyDef.position = (b3Pos){ x, y, z };
 				b3BodyId bodyId = b3CreateBody( worldId, &bodyDef );
 
 				b3CreateHullShape( bodyId, &shapeDef, &cube.base );
-				z += 4.0f * a;
+				z += spacing;
 			}
 
-			y += 4.0f * a;
+			y += spacing;
 		}
 
-		x += 4.0f * a;
+		x += spacing;
 	}
 }
+
+void CreateWasher( b3WorldId worldId )
+{
+	CreateWasherEx( worldId, 0.0f );
+}
+
+void CreateWasherRounded( b3WorldId worldId )
+{
+	CreateWasherEx( worldId, 0.25f );
+}
+
 
 struct
 {
