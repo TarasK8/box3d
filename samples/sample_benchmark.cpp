@@ -370,6 +370,85 @@ public:
 
 static int sampleSmallConvexes = RegisterSample( "Benchmark", "Candy Cups", CandyCups::Create );
 
+class CandyCupsRounded : public Sample
+{
+public:
+	explicit CandyCupsRounded( SampleContext* context )
+		: Sample( context )
+	{
+		if ( context->restart == false )
+		{
+			float radius = m_isDebug ? 20.0f : 70.0f;
+			m_camera->SetView( 45.0f, 20.0f, radius, b3Pos_zero );
+		}
+
+		AddGroundBox( 60.0f );
+
+		{
+			constexpr int n = m_isDebug ? 4 : 16;
+			constexpr int m = m_isDebug ? 4 : 16;
+
+			b3BodyDef bodyDef = b3DefaultBodyDef();
+			bodyDef.type = b3_dynamicBody;
+			b3ShapeDef shapeDef = b3DefaultShapeDef();
+			m_convex = CreateConvex( 0.6f, 0.0f, 0.95f, 1.0f );
+			m_convex->skinRadius = 0.25f;
+			for ( int i = 0; i < n; ++i )
+			{
+				for ( int j = 0; j < m; ++j )
+				{
+					for ( int k = 0; k < m; ++k )
+					{
+						bodyDef.position = { -10.0f + 2.5f * j, ( 1.5f * i ) + 0.25f, -10.0f + 2.5f * k };
+						b3BodyId bodyId = b3CreateBody( m_worldId, &bodyDef );
+						b3CreateHullShape( bodyId, &shapeDef, m_convex );
+					}
+				}
+			}
+		}
+	}
+
+	~CandyCupsRounded() override
+	{
+		b3DestroyHull( m_convex );
+	}
+
+	b3HullData* CreateConvex( float radius1, float height1, float radius2, float height2 ) const
+	{
+		constexpr int sideCount = 8;
+		const float deltaAlpha = 2.0f * B3_PI / sideCount;
+
+		int vertexCount = 2 * sideCount;
+		b3Vec3 vertexBase[2 * sideCount];
+
+		float alpha = 0.0f;
+		for ( int sideIndex = 0; sideIndex < sideCount; ++sideIndex )
+		{
+			b3CosSin cs = b3ComputeCosSin( alpha );
+
+			float x1 = radius1 * cs.cosine;
+			float z1 = radius1 * cs.sine;
+			float x2 = radius2 * cs.cosine;
+			float z2 = radius2 * cs.sine;
+
+			vertexBase[2 * sideIndex + 0] = { x1, height1, z1 };
+			vertexBase[2 * sideIndex + 1] = { x2, height2, z2 };
+			alpha += deltaAlpha;
+		}
+
+		return b3CreateHull( vertexBase, vertexCount, vertexCount );
+	}
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new CandyCupsRounded( context );
+	}
+
+	b3HullData* m_convex;
+};
+
+static int sampleSmallConvexesRounded = RegisterSample( "Benchmark", "Candy Cups (Rounded)", CandyCupsRounded::Create );
+
 class BenchmarkExplosion : public Sample
 {
 public:
