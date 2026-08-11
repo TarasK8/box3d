@@ -1601,6 +1601,258 @@ public:
 
 static int sampleBallAndChain = RegisterSample( "Joints", "Ball and Chain", BallAndChain::Create );
 
+class JointStability : public Sample
+{
+public:
+	explicit JointStability( SampleContext* context )
+		: Sample( context )
+	{
+		if ( context->restart == false )
+		{
+			m_camera->SetView( 0.0f, 15.0f, 40.0f, { 0.0f, 6.0f, 0.0f } );
+		}
+
+		m_groundId = AddGroundBox( 40.0f );
+
+		m_levelCount = 3;
+		m_barLength = 8.0f;
+		m_barHeight = 0.8f;
+		m_barDepth = 0.8f;
+		m_spacerSize = 1.0f;
+		m_useSpacers = true;
+		m_gap = 0.2f;
+		m_density = 20.0f;
+		m_constraintHertz = 120.0f;
+		m_constraintDampingRatio = 0.5f;
+		m_maxTranslationError = 0.0f;
+
+		Build();
+	}
+
+	void Build()
+	{
+		for ( b3JointId jointId : m_jointIds )
+		{
+			if ( b3Joint_IsValid( jointId ) )
+			{
+				b3DestroyJoint( jointId, false );
+			}
+		}
+		m_jointIds.clear();
+
+		for ( b3BodyId bodyId : m_bodyIds )
+		{
+			if ( b3Body_IsValid( bodyId ) )
+			{
+				b3DestroyBody( bodyId );
+			}
+		}
+		m_bodyIds.clear();
+
+		float barHalfLength = 0.5f * m_barLength;
+		float barHalfHeight = 0.5f * m_barHeight;
+		float barHalfDepth = 0.5f * m_barDepth;
+		float spacerHalf = 0.5f * m_spacerSize;
+
+		b3BoxHull barBox = b3MakeBoxHull( barHalfLength, barHalfHeight, barHalfDepth );
+		b3BoxHull spacerBox = b3MakeBoxHull( spacerHalf, spacerHalf, spacerHalf );
+		b3BoxHull baseBox = b3MakeBoxHull( spacerHalf, 1.0f, spacerHalf );
+
+		b3ShapeDef shapeDef = b3DefaultShapeDef();
+		shapeDef.density = m_density;
+
+		// Base anchor box (static) at ground level
+		b3BodyDef baseBodyDef = b3DefaultBodyDef();
+		baseBodyDef.type = b3_staticBody;
+		baseBodyDef.position = { -barHalfLength, 1.0f, 0.0f };
+		b3BodyId baseId = b3CreateBody( m_worldId, &baseBodyDef );
+		b3CreateHullShape( baseId, &shapeDef, &baseBox.base );
+		m_bodyIds.push_back( baseId );
+
+		b3Quat axisQuat = b3ComputeQuatBetweenUnitVectors( b3Vec3_axisZ, b3Vec3_axisY );
+
+		b3BodyId prevBodyId = baseId;
+		b3Pos currentPivot = { -barHalfLength, 2.0f + 0.5f * m_gap, 0.0f };
+
+		float currentY = 2.0f + m_gap + barHalfHeight;
+
+		for ( int i = 0; i < m_levelCount; ++i )
+		{
+			// Create horizontal bar
+			b3BodyDef barDef = b3DefaultBodyDef();
+			barDef.type = b3_dynamicBody;
+			barDef.position = { 0.0f, currentY, 0.0f };
+			barDef.linearDamping = 0.1f;
+			barDef.angularDamping = 0.1f;
+			b3BodyId barId = b3CreateBody( m_worldId, &barDef );
+			b3CreateHullShape( barId, &shapeDef, &barBox.base );
+			m_bodyIds.push_back( barId );
+
+			// Revolute joint connecting prevBodyId to barId around Y-axis
+			b3RevoluteJointDef jointDef = b3DefaultRevoluteJointDef();
+			jointDef.base.bodyIdA = prevBodyId;
+			jointDef.base.bodyIdB = barId;
+			jointDef.base.localFrameA.p = b3Body_GetLocalPoint( prevBodyId, currentPivot );
+			jointDef.base.localFrameA.q = axisQuat;
+			jointDef.base.localFrameB.p = b3Body_GetLocalPoint( barId, currentPivot );
+			jointDef.base.localFrameB.q = axisQuat;
+			jointDef.base.constraintHertz = m_constraintHertz;
+			jointDef.base.constraintDampingRatio = m_constraintDampingRatio;
+
+			b3JointId jId = b3CreateRevoluteJoint( m_worldId, &jointDef );
+			m_jointIds.push_back( jId );
+
+			if ( i < m_levelCount - 1 )
+			{
+				float sideX = ( i % 2 == 0 ) ? barHalfLength : -barHalfLength;
+				float barTopY = currentY + barHalfHeight;
+
+				if ( m_useSpacers )
+				{
+					float spacerY = barTopY + 0.5f * m_gap + spacerHalf;
+
+					// Create vertical spacer cube
+					b3BodyDef spacerDef = b3DefaultBodyDef();
+					spacerDef.type = b3_dynamicBody;
+					spacerDef.position = { sideX, spacerY, 0.0f };
+					spacerDef.linearDamping = 0.1f;
+					spacerDef.angularDamping = 0.1f;
+					b3BodyId spacerId = b3CreateBody( m_worldId, &spacerDef );
+					b3CreateHullShape( spacerId, &shapeDef, &spacerBox.base );
+					m_bodyIds.push_back( spacerId );
+
+					// Revolute joint connecting barId to spacerId around Y-axis
+					b3Pos barToSpacerPivot = { sideX, barTopY + 0.5f * m_gap, 0.0f };
+					b3RevoluteJointDef jointDef1 = b3DefaultRevoluteJointDef();
+					jointDef1.base.bodyIdA = barId;
+					jointDef1.base.bodyIdB = spacerId;
+					jointDef1.base.localFrameA.p = b3Body_GetLocalPoint( barId, barToSpacerPivot );
+					jointDef1.base.localFrameA.q = axisQuat;
+					jointDef1.base.localFrameB.p = b3Body_GetLocalPoint( spacerId, barToSpacerPivot );
+					jointDef1.base.localFrameB.q = axisQuat;
+					jointDef1.base.constraintHertz = m_constraintHertz;
+					jointDef1.base.constraintDampingRatio = m_constraintDampingRatio;
+
+					b3JointId jId1 = b3CreateRevoluteJoint( m_worldId, &jointDef1 );
+					m_jointIds.push_back( jId1 );
+
+					prevBodyId = spacerId;
+					currentPivot = { sideX, spacerY + spacerHalf + 0.5f * m_gap, 0.0f };
+					currentY = spacerY + spacerHalf + m_gap + barHalfHeight;
+				}
+				else
+				{
+					// Direct connection mode: no spacer cube
+					prevBodyId = barId;
+					currentPivot = { sideX, barTopY + 0.5f * m_gap, 0.0f };
+					currentY = barTopY + m_gap + barHalfHeight;
+				}
+			}
+		}
+		m_maxTranslationError = 0.0f;
+	}
+
+	bool DrawControls() override
+	{
+		ImGui::PushItemWidth( 8.0f * ImGui::GetFontSize() );
+
+		bool rebuild = false;
+
+		if ( ImGui::SliderInt( "Levels", &m_levelCount, 2, 10 ) )
+		{
+			rebuild = true;
+		}
+
+		if ( ImGui::SliderFloat( "Bar Length", &m_barLength, 2.0f, 16.0f, "%.1f" ) )
+		{
+			rebuild = true;
+		}
+
+		if ( ImGui::Checkbox( "Use Spacers", &m_useSpacers ) )
+		{
+			rebuild = true;
+		}
+
+		if ( ImGui::SliderFloat( "Vertical Gap", &m_gap, 0.0f, 2.0f, "%.2f" ) )
+		{
+			rebuild = true;
+		}
+
+		if ( ImGui::SliderFloat( "Constraint Hertz", &m_constraintHertz, 15.0f, 480.0f, "%.0f" ) )
+		{
+			for ( b3JointId jId : m_jointIds )
+			{
+				b3Joint_SetConstraintTuning( jId, m_constraintHertz, m_constraintDampingRatio );
+				b3Joint_WakeBodies( jId );
+			}
+		}
+
+		if ( ImGui::SliderFloat( "Damping Ratio", &m_constraintDampingRatio, 0.0f, 10.0f, "%.1f" ) )
+		{
+			for ( b3JointId jId : m_jointIds )
+			{
+				b3Joint_SetConstraintTuning( jId, m_constraintHertz, m_constraintDampingRatio );
+				b3Joint_WakeBodies( jId );
+			}
+		}
+
+		if ( ImGui::Button( "Reset Scene" ) )
+		{
+			rebuild = true;
+		}
+
+		ImGui::PopItemWidth();
+
+		if ( rebuild )
+		{
+			Build();
+		}
+
+		return true;
+	}
+
+	void Step() override
+	{
+		Sample::Step();
+
+		float maxError = 0.0f;
+		for ( b3JointId jId : m_jointIds )
+		{
+			if ( b3Joint_IsValid( jId ) )
+			{
+				float err = b3Joint_GetLinearSeparation( jId );
+				maxError = b3MaxFloat( maxError, err );
+			}
+		}
+		m_maxTranslationError = b3MaxFloat( m_maxTranslationError, maxError );
+
+		DrawTextLine( "Max Joint Separation Error: %g", m_maxTranslationError );
+		DrawTextLine( "Current Joint Separation Error: %g", maxError );
+	}
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new JointStability( context );
+	}
+
+	std::vector<b3BodyId> m_bodyIds;
+	std::vector<b3JointId> m_jointIds;
+	b3BodyId m_groundId;
+	int m_levelCount;
+	float m_barLength;
+	float m_barHeight;
+	float m_barDepth;
+	float m_spacerSize;
+	bool m_useSpacers;
+	float m_gap;
+	float m_density;
+	float m_constraintHertz;
+	float m_constraintDampingRatio;
+	float m_maxTranslationError;
+};
+
+static int sampleJointStability = RegisterSample( "Joints", "Joint Stability", JointStability::Create );
+
 class Door : public Sample
 {
 public:
