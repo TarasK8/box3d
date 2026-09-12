@@ -3350,3 +3350,504 @@ public:
 };
 
 static int sampleGearLift = RegisterSample( "Joints", "Gear Lift", GearLift::Create );
+
+// Scrap Mechanic style vehicle built from individual component bodies & joints.
+// Tests engine stability for modular physics sandboxes.
+class ScrapVehicle : public Sample
+{
+public:
+	explicit ScrapVehicle( SampleContext* context )
+		: Sample( context )
+	{
+		if ( context->restart == false )
+		{
+			m_camera->SetView( 45.0f, 20.0f, 15.0f, { 0.0f, 2.0f, 0.0f } );
+		}
+
+		AddGroundBox( 50.0f );
+
+		m_chassisDensity = 2.0f;
+		m_blockDensity = 5.0f;
+		m_wheelDensity = 3.0f;
+
+		m_enableSuspensionSpring = true;
+		m_suspensionHertz = 5.0f;
+		m_suspensionDampingRatio = 0.7f;
+		m_enableSuspensionLimit = true;
+		m_lowerSuspensionLimit = -0.4f;
+		m_upperSuspensionLimit = 0.2f;
+
+		m_enableMotor = true;
+		m_motorSpeed = 30.0f;
+		m_maxMotorTorque = 300.0f;
+
+		m_maxSteerDegrees = 30.0f;
+
+		for ( int i = 0; i < 4; ++i )
+		{
+			m_blockIds[i] = b3_nullBodyId;
+			m_wheelIds[i] = b3_nullBodyId;
+			m_suspensionJointIds[i] = b3_nullJointId;
+			m_bearingJointIds[i] = b3_nullJointId;
+		}
+
+		m_steerBlockIds[0] = b3_nullBodyId;
+		m_steerBlockIds[1] = b3_nullBodyId;
+		m_steerJointIds[0] = b3_nullJointId;
+		m_steerJointIds[1] = b3_nullJointId;
+		m_chassisId = b3_nullBodyId;
+
+		CreateScene();
+	}
+
+	~ScrapVehicle() override
+	{
+		if ( m_camera->m_thirdPerson )
+		{
+			m_camera->m_thirdPerson = false;
+			sapp_lock_mouse( false );
+		}
+	}
+
+	void DestroyScene()
+	{
+		for ( int i = 0; i < 4; ++i )
+		{
+			if ( b3Joint_IsValid( m_bearingJointIds[i] ) )
+			{
+				b3DestroyJoint( m_bearingJointIds[i], false );
+				m_bearingJointIds[i] = b3_nullJointId;
+			}
+			if ( b3Joint_IsValid( m_suspensionJointIds[i] ) )
+			{
+				b3DestroyJoint( m_suspensionJointIds[i], false );
+				m_suspensionJointIds[i] = b3_nullJointId;
+			}
+			if ( b3Body_IsValid( m_wheelIds[i] ) )
+			{
+				b3DestroyBody( m_wheelIds[i] );
+				m_wheelIds[i] = b3_nullBodyId;
+			}
+			if ( b3Body_IsValid( m_blockIds[i] ) )
+			{
+				b3DestroyBody( m_blockIds[i] );
+				m_blockIds[i] = b3_nullBodyId;
+			}
+		}
+
+		for ( int i = 0; i < 2; ++i )
+		{
+			if ( b3Joint_IsValid( m_steerJointIds[i] ) )
+			{
+				b3DestroyJoint( m_steerJointIds[i], false );
+				m_steerJointIds[i] = b3_nullJointId;
+			}
+			if ( b3Body_IsValid( m_steerBlockIds[i] ) )
+			{
+				b3DestroyBody( m_steerBlockIds[i] );
+				m_steerBlockIds[i] = b3_nullBodyId;
+			}
+		}
+
+		if ( b3Body_IsValid( m_chassisId ) )
+		{
+			b3DestroyBody( m_chassisId );
+			m_chassisId = b3_nullBodyId;
+		}
+	}
+
+	void CreateScene()
+	{
+		DestroyScene();
+
+		// 1. Base Platform (Chassis)
+		b3Vec3 chassisPos = { 0.0f, 3.0f, 0.0f };
+		{
+			b3BodyDef bodyDef = b3DefaultBodyDef();
+			bodyDef.type = b3_dynamicBody;
+			bodyDef.position = chassisPos;
+			m_chassisId = b3CreateBody( m_worldId, &bodyDef );
+
+			b3ShapeDef shapeDef = b3DefaultShapeDef();
+			shapeDef.density = m_chassisDensity;
+
+			// Main body box: 3.0m length (X), 0.4m height (Y), 1.6m width (Z)
+			b3BoxHull chassisBox = b3MakeBoxHull( 1.5f, 0.2f, 0.8f );
+			b3CreateHullShape( m_chassisId, &shapeDef, &chassisBox.base );
+		}
+
+		// Offsets for 4 wheel mounting points relative to chassis center
+		// 0: Front-Left (+X, +Z)
+		// 1: Front-Right (+X, -Z)
+		// 2: Rear-Left (-X, +Z)
+		// 3: Rear-Right (-X, -Z)
+		b3Vec3 cornerOffsets[4] = {
+			{ 1.5f, -0.2f, 0.9f },
+			{ 1.5f, -0.2f, -0.9f },
+			{ -1.5f, -0.2f, 0.9f },
+			{ -1.5f, -0.2f, -0.9f }
+		};
+
+		float wheelSideSign[4] = { 1.0f, -1.0f, 1.0f, -1.0f };
+
+		// Cylinder hull for wheels: radius = 0.4m, height = 0.25m
+		b3HullData* wheelHull = b3CreateCylinder( 0.25f, 0.4f, 0.0f, 16 );
+
+		for ( int i = 0; i < 4; ++i )
+		{
+			b3Vec3 mountPos = { chassisPos.x + cornerOffsets[i].x, chassisPos.y + cornerOffsets[i].y, chassisPos.z + cornerOffsets[i].z };
+
+			b3BodyId parentBodyId = m_chassisId;
+			b3Vec3 parentAttachOffset = cornerOffsets[i];
+
+			// --- Front Wheel Steering Bearing (Revolute Joint around Y-axis) ---
+			if ( i < 2 )
+			{
+				b3BodyDef steerBlockDef = b3DefaultBodyDef();
+				steerBlockDef.type = b3_dynamicBody;
+				steerBlockDef.position = mountPos;
+				m_steerBlockIds[i] = b3CreateBody( m_worldId, &steerBlockDef );
+
+				b3ShapeDef shapeDef = b3DefaultShapeDef();
+				shapeDef.density = m_blockDensity;
+				b3BoxHull steerBox = b3MakeBoxHull( 0.1f, 0.1f, 0.1f );
+				b3CreateHullShape( m_steerBlockIds[i], &shapeDef, &steerBox.base );
+
+				// Revolute joint around Y axis
+				b3Quat yAxisQuat = b3ComputeQuatBetweenUnitVectors( b3Vec3_axisZ, b3Vec3_axisY );
+				b3RevoluteJointDef steerJointDef = b3DefaultRevoluteJointDef();
+				steerJointDef.base.bodyIdA = m_chassisId;
+				steerJointDef.base.bodyIdB = m_steerBlockIds[i];
+				steerJointDef.base.localFrameA.p = cornerOffsets[i];
+				steerJointDef.base.localFrameA.q = yAxisQuat;
+				steerJointDef.base.localFrameB.p = { 0.0f, 0.0f, 0.0f };
+				steerJointDef.base.localFrameB.q = yAxisQuat;
+				steerJointDef.base.collideConnected = false;
+
+				steerJointDef.enableSpring = true;
+				steerJointDef.hertz = 15.0f;
+				steerJointDef.dampingRatio = 1.0f;
+				steerJointDef.enableLimit = true;
+				steerJointDef.lowerAngle = -B3_DEG_TO_RAD * m_maxSteerDegrees;
+				steerJointDef.upperAngle = B3_DEG_TO_RAD * m_maxSteerDegrees;
+
+				m_steerJointIds[i] = b3CreateRevoluteJoint( m_worldId, &steerJointDef );
+
+				parentBodyId = m_steerBlockIds[i];
+				parentAttachOffset = { 0.0f, 0.0f, 0.0f };
+			}
+
+			// --- Intermediate Block ---
+			{
+				b3BodyDef bodyDef = b3DefaultBodyDef();
+				bodyDef.type = b3_dynamicBody;
+				bodyDef.position = mountPos;
+				m_blockIds[i] = b3CreateBody( m_worldId, &bodyDef );
+
+				b3ShapeDef shapeDef = b3DefaultShapeDef();
+				shapeDef.density = m_blockDensity;
+
+				b3BoxHull blockBox = b3MakeBoxHull( 0.15f, 0.15f, 0.15f );
+				b3CreateHullShape( m_blockIds[i], &shapeDef, &blockBox.base );
+			}
+
+			// --- Suspension Joint (Prismatic Joint) ---
+			// Allows linear motion along vertical axis (-Y direction).
+			// b3PrismaticJointDef slides along local X axis.
+			// Rotate local frame so local X points down (-Y).
+			{
+				b3Quat frameQuat = b3ComputeQuatBetweenUnitVectors( b3Vec3_axisX, { 0.0f, -1.0f, 0.0f } );
+
+				b3PrismaticJointDef jointDef = b3DefaultPrismaticJointDef();
+				jointDef.base.bodyIdA = parentBodyId;
+				jointDef.base.bodyIdB = m_blockIds[i];
+				jointDef.base.localFrameA.p = parentAttachOffset;
+				jointDef.base.localFrameA.q = frameQuat;
+				jointDef.base.localFrameB.p = { 0.0f, 0.0f, 0.0f };
+				jointDef.base.localFrameB.q = frameQuat;
+				jointDef.base.collideConnected = false;
+
+				jointDef.enableSpring = m_enableSuspensionSpring;
+				jointDef.hertz = m_suspensionHertz;
+				jointDef.dampingRatio = m_suspensionDampingRatio;
+				jointDef.enableLimit = m_enableSuspensionLimit;
+				jointDef.lowerTranslation = m_lowerSuspensionLimit;
+				jointDef.upperTranslation = m_upperSuspensionLimit;
+
+				m_suspensionJointIds[i] = b3CreatePrismaticJoint( m_worldId, &jointDef );
+			}
+
+			// --- Wheel Body (Cylinder Hull) ---
+			b3Vec3 wheelPos = { mountPos.x, mountPos.y, mountPos.z + wheelSideSign[i] * 0.25f };
+			{
+				b3BodyDef bodyDef = b3DefaultBodyDef();
+				bodyDef.type = b3_dynamicBody;
+				bodyDef.position = wheelPos;
+				bodyDef.allowFastRotation = true;
+				// Rotate cylinder from Y-axis to Z-axis so wheel rolls along X-axis
+				bodyDef.rotation = b3ComputeQuatBetweenUnitVectors( b3Vec3_axisY, b3Vec3_axisZ );
+				m_wheelIds[i] = b3CreateBody( m_worldId, &bodyDef );
+
+				b3ShapeDef shapeDef = b3DefaultShapeDef();
+				shapeDef.density = m_wheelDensity;
+				shapeDef.baseMaterial.friction = 1.5f;
+				shapeDef.baseMaterial.rollingResistance = 0.01f;
+
+				b3CreateHullShape( m_wheelIds[i], &shapeDef, wheelHull );
+			}
+
+			// --- Bearing Joint (Revolute Joint) ---
+			// Connects intermediate block to wheel collider along lateral Z axis.
+			{
+				b3RevoluteJointDef jointDef = b3DefaultRevoluteJointDef();
+				jointDef.base.bodyIdA = m_blockIds[i];
+				jointDef.base.bodyIdB = m_wheelIds[i];
+				jointDef.base.localFrameA.p = { 0.0f, 0.0f, wheelSideSign[i] * 0.25f };
+				jointDef.base.localFrameA.q = b3Quat_identity;
+				jointDef.base.localFrameB.p = { 0.0f, 0.0f, 0.0f };
+				jointDef.base.localFrameB.q = b3ComputeQuatBetweenUnitVectors( b3Vec3_axisZ, b3Vec3_axisY );
+				jointDef.base.collideConnected = false;
+
+				jointDef.enableMotor = m_enableMotor;
+				jointDef.maxMotorTorque = m_maxMotorTorque;
+				jointDef.motorSpeed = 0.0f;
+
+				m_bearingJointIds[i] = b3CreateRevoluteJoint( m_worldId, &jointDef );
+			}
+		}
+
+		b3DestroyHull( wheelHull );
+
+		m_camera->m_thirdPerson = false;
+	}
+
+	void Keyboard( int key, int action, int mods ) override
+	{
+		if ( key == KEY_T && action == ACTION_PRESS )
+		{
+			ToggleThirdPerson();
+		}
+	}
+
+	bool DrawControls() override
+	{
+		bool updateScene = false;
+
+		ImGui::Text( "Mass & Density Settings" );
+		if ( ImGui::SliderFloat( "Chassis Density", &m_chassisDensity, 0.1f, 10.0f, "%.1f" ) )
+		{
+			updateScene = true;
+		}
+		if ( ImGui::SliderFloat( "Block Density", &m_blockDensity, 0.1f, 10.0f, "%.1f" ) )
+		{
+			updateScene = true;
+		}
+		if ( ImGui::SliderFloat( "Wheel Density", &m_wheelDensity, 0.1f, 10.0f, "%.1f" ) )
+		{
+			updateScene = true;
+		}
+
+		ImGui::Separator();
+		ImGui::Text( "Suspension (Prismatic Joint)" );
+
+		if ( ImGui::Checkbox( "Enable Spring", &m_enableSuspensionSpring ) )
+		{
+			for ( int i = 0; i < 4; ++i )
+			{
+				b3PrismaticJoint_EnableSpring( m_suspensionJointIds[i], m_enableSuspensionSpring );
+				b3Joint_WakeBodies( m_suspensionJointIds[i] );
+			}
+		}
+
+		if ( ImGui::SliderFloat( "Hertz", &m_suspensionHertz, 0.5f, 20.0f, "%.1f" ) )
+		{
+			for ( int i = 0; i < 4; ++i )
+			{
+				b3PrismaticJoint_SetSpringHertz( m_suspensionJointIds[i], m_suspensionHertz );
+				b3Joint_WakeBodies( m_suspensionJointIds[i] );
+			}
+		}
+
+		if ( ImGui::SliderFloat( "Damping Ratio", &m_suspensionDampingRatio, 0.0f, 2.0f, "%.2f" ) )
+		{
+			for ( int i = 0; i < 4; ++i )
+			{
+				b3PrismaticJoint_SetSpringDampingRatio( m_suspensionJointIds[i], m_suspensionDampingRatio );
+				b3Joint_WakeBodies( m_suspensionJointIds[i] );
+			}
+		}
+
+		if ( ImGui::Checkbox( "Enable Limits", &m_enableSuspensionLimit ) )
+		{
+			for ( int i = 0; i < 4; ++i )
+			{
+				b3PrismaticJoint_EnableLimit( m_suspensionJointIds[i], m_enableSuspensionLimit );
+				b3Joint_WakeBodies( m_suspensionJointIds[i] );
+			}
+		}
+
+		if ( m_enableSuspensionLimit )
+		{
+			if ( ImGui::SliderFloat( "Lower Limit", &m_lowerSuspensionLimit, -1.0f, 0.0f, "%.2f" ) ||
+				 ImGui::SliderFloat( "Upper Limit", &m_upperSuspensionLimit, 0.0f, 1.0f, "%.2f" ) )
+			{
+				m_lowerSuspensionLimit = b3MinFloat( m_lowerSuspensionLimit, m_upperSuspensionLimit );
+				for ( int i = 0; i < 4; ++i )
+				{
+					b3PrismaticJoint_SetLimits( m_suspensionJointIds[i], m_lowerSuspensionLimit, m_upperSuspensionLimit );
+					b3Joint_WakeBodies( m_suspensionJointIds[i] );
+				}
+			}
+		}
+
+		ImGui::Separator();
+		ImGui::Text( "Bearing / Drive Motor (Revolute Joint)" );
+
+		if ( ImGui::Checkbox( "Enable Motor", &m_enableMotor ) )
+		{
+			for ( int i = 0; i < 4; ++i )
+			{
+				b3RevoluteJoint_EnableMotor( m_bearingJointIds[i], m_enableMotor );
+				b3Joint_WakeBodies( m_bearingJointIds[i] );
+			}
+		}
+
+		if ( ImGui::SliderFloat( "Max Motor Torque", &m_maxMotorTorque, 0.0f, 1000.0f, "%.0f" ) )
+		{
+			for ( int i = 0; i < 4; ++i )
+			{
+				b3RevoluteJoint_SetMaxMotorTorque( m_bearingJointIds[i], m_maxMotorTorque );
+				b3Joint_WakeBodies( m_bearingJointIds[i] );
+			}
+		}
+
+		ImGui::SliderFloat( "Drive Speed", &m_motorSpeed, 0.0f, 100.0f, "%.0f" );
+
+		ImGui::Separator();
+		ImGui::Text( "Steering Settings" );
+		if ( ImGui::SliderFloat( "Max Steer Angle", &m_maxSteerDegrees, 0.0f, 45.0f, "%.0f" ) )
+		{
+			for ( int i = 0; i < 2; ++i )
+			{
+				b3RevoluteJoint_SetLimits( m_steerJointIds[i], -B3_DEG_TO_RAD * m_maxSteerDegrees, B3_DEG_TO_RAD * m_maxSteerDegrees );
+				b3Joint_WakeBodies( m_steerJointIds[i] );
+			}
+		}
+
+		ImGui::Separator();
+
+		if ( ImGui::Button( "Reset Scene" ) || updateScene )
+		{
+			CreateScene();
+		}
+
+		ImGui::Separator();
+
+		bool thirdPerson = m_camera->m_thirdPerson;
+		if ( ImGui::Checkbox( "Third Person (T)", &thirdPerson ) )
+		{
+			ToggleThirdPerson();
+		}
+
+		return true;
+	}
+
+	void Step() override
+	{
+		float throttle = 0.0f;
+		float steering = 0.0f;
+
+		if ( IsKeyDown( KEY_W ) )
+		{
+			throttle += 1.0f;
+			b3Body_SetAwake( m_chassisId, true );
+		}
+
+		if ( IsKeyDown( KEY_S ) )
+		{
+			throttle -= 1.0f;
+			b3Body_SetAwake( m_chassisId, true );
+		}
+
+		if ( IsKeyDown( KEY_A ) )
+		{
+			steering += 1.0f;
+			b3Body_SetAwake( m_chassisId, true );
+		}
+
+		if ( IsKeyDown( KEY_D ) )
+		{
+			steering -= 1.0f;
+			b3Body_SetAwake( m_chassisId, true );
+		}
+
+		// Apply steering target angle to front wheel steering joints
+		float steerTarget = B3_DEG_TO_RAD * m_maxSteerDegrees * steering;
+		for ( int i = 0; i < 2; ++i )
+		{
+			b3RevoluteJoint_SetTargetAngle( m_steerJointIds[i], steerTarget );
+		}
+
+		// Apply motor speed to bearing joints (driving wheels)
+		if ( m_enableMotor )
+		{
+			for ( int i = 0; i < 4; ++i )
+			{
+				float sign = ( i % 2 == 0 ? -1.0f : 1.0f );
+				b3RevoluteJoint_SetMotorSpeed( m_bearingJointIds[i], sign * m_motorSpeed * throttle );
+			}
+		}
+
+		if ( m_camera->m_thirdPerson )
+		{
+			b3WorldTransform transform = b3Body_GetTransform( m_chassisId );
+			m_camera->m_pivot = transform.p;
+			m_camera->UpdateTransform();
+		}
+
+		Sample::Step();
+	}
+
+	void Render() override
+	{
+		Sample::Render();
+
+		b3Vec3 velocity = b3Body_GetLinearVelocity( m_chassisId );
+		float speed = b3Length( velocity );
+		DrawTextLine( "Vehicle Speed = %.1f m/s", speed );
+		DrawTextLine( "Controls: W/S - Drive | A/D - Steer | T - Toggle Third Person Camera" );
+	}
+
+	static Sample* Create( SampleContext* context )
+	{
+		return new ScrapVehicle( context );
+	}
+
+	b3BodyId m_chassisId;
+	b3BodyId m_steerBlockIds[2];
+	b3BodyId m_blockIds[4];
+	b3BodyId m_wheelIds[4];
+
+	b3JointId m_steerJointIds[2];
+	b3JointId m_suspensionJointIds[4];
+	b3JointId m_bearingJointIds[4];
+
+	float m_chassisDensity;
+	float m_blockDensity;
+	float m_wheelDensity;
+
+	bool m_enableSuspensionSpring;
+	float m_suspensionHertz;
+	float m_suspensionDampingRatio;
+	bool m_enableSuspensionLimit;
+	float m_lowerSuspensionLimit;
+	float m_upperSuspensionLimit;
+
+	bool m_enableMotor;
+	float m_motorSpeed;
+	float m_maxMotorTorque;
+	float m_maxSteerDegrees;
+};
+
+static int sampleScrapVehicle = RegisterSample( "Joints", "Scrap Vehicle", ScrapVehicle::Create );
+
